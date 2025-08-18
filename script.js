@@ -1,16 +1,13 @@
-/* Phone Inspection PWA — Vanilla JS
-   - Validates/stores IMEI (localStorage)
-   - Drives 12 tests with modern Web APIs + graceful fallbacks
-   - Builds a shareable text report and a detailed HTML report
-   - Notes on PWA install:
-       * We attach an inlined manifest. For full install/offline, add a real service worker file `sw.js`
-         and uncomment the registration code below.
+/* Phone Inspection PWA — Vanilla JS (Actualizado con confirmaciones)
+   - Añade confirmación Pass/Fail en pruebas NO automáticas (o cuando conviene validar visualmente).
+   - Mantiene automáticas: GPS / Touch / Multitouch / Accelerometer / Gyroscope / Battery.
+   - Mantiene confirmación ya existente: Speaker / Microphone / Display.
 */
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
-/* ---------- Attach manifest from inline <script id="app-manifest"> ---------- */
+/* ---------- Adjuntar manifest inlined ---------- */
 (function attachManifest(){
   try{
     const json = $("#app-manifest")?.textContent?.trim();
@@ -25,29 +22,17 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   }catch(e){ /* ignore */ }
 })();
 
-/* ---------- Optional Service Worker (create a standalone sw.js file to enable) ----------
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js')
-    .catch(console.warn);
-}
-// Example sw.js (put in same folder):
-// self.addEventListener('install', e => {
-//   e.waitUntil(caches.open('inspect-v1').then(c=>c.addAll(['./','./index.html','./style.css','./script.js'])));
-// });
-// self.addEventListener('fetch', e => {
-//   e.respondWith(caches.match(e.request).then(r=>r || fetch(e.request)));
-// });
------------------------------------------------------------------------------- */
-
-const views = {
-  register: $("#registerView"),
-  dashboard: $("#dashboardView"),
-  overlay: $("#panelOverlay")
-};
+/* ---------- (Opcional) Registrar Service Worker si existe sw.js ---------- */
+// Descomenta si ya agregaste sw.js
+// if ('serviceWorker' in navigator) {
+//   navigator.serviceWorker.register('./sw.js')
+//     .then(()=>console.log('SW registered'))
+//     .catch(console.warn);
+// }
 
 $("#year").textContent = new Date().getFullYear();
 
-/* ---------- State ---------- */
+/* ---------- Estado ---------- */
 const TEST_KEYS = [
   "cosmetic","gps","speaker","microphone","frontCamera","backCamera",
   "touchscreen","multitouch","display","accelerometer","gyroscope","battery"
@@ -74,14 +59,8 @@ const state = {
 
 const STORAGE_KEY = "inspection_v1";
 
-/* ---------- IMEI Registration ---------- */
-const imeiInput = $("#imeiInput");
-const imeiError = $("#imeiError");
-const imeiDisplay = $("#imeiDisplay");
-
-function isValidIMEI(v){
-  return /^\d{15}$/.test(v);
-}
+/* ---------- Utilidades de estado ---------- */
+function isValidIMEI(v){ return /^\d{15}$/.test(v); }
 
 function persist(){
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
@@ -106,6 +85,11 @@ function hydrate(){
   } catch(e){ console.warn(e); }
 }
 
+/* ---------- IMEI ---------- */
+const imeiInput = $("#imeiInput");
+const imeiError = $("#imeiError");
+const imeiDisplay = $("#imeiDisplay");
+
 $("#registerBtn").addEventListener("click", () => {
   const v = imeiInput.value.trim();
   if(!isValidIMEI(v)){
@@ -121,16 +105,15 @@ $("#registerBtn").addEventListener("click", () => {
 });
 
 function showDashboard(){
-  views.register.classList.remove("active");
-  views.dashboard.classList.add("active");
+  $("#registerView").classList.remove("active");
+  $("#dashboardView").classList.add("active");
   imeiDisplay.textContent = state.imei || "—";
 }
 
 hydrate();
 
-/* ---------- Panel helpers ---------- */
-const overlay = views.overlay;
-
+/* ---------- Paneles ---------- */
+const overlay = $("#panelOverlay");
 function openPanel(id){
   overlay.classList.add("show");
   overlay.setAttribute("aria-hidden","false");
@@ -138,23 +121,17 @@ function openPanel(id){
   const panel = $("#"+id, overlay);
   if(panel) panel.style.display = "block";
 }
-
 function closePanel(){
   overlay.classList.remove("show");
   overlay.setAttribute("aria-hidden","true");
-  stopAllMedia(); // safety
+  stopAllMedia();
 }
-
-overlay.addEventListener("click", (e) => {
-  if(e.target === overlay) closePanel();
-});
+overlay.addEventListener("click", (e) => { if(e.target === overlay) closePanel(); });
 $$("[data-close]", overlay).forEach(btn => btn.addEventListener("click", closePanel));
 $$("[data-open]").forEach(btn => btn.addEventListener("click", () => openPanel(btn.dataset.open)));
 
-/* ---------- Progress + statuses ---------- */
-function countPasses(){
-  return TEST_KEYS.filter(k => state.results[k].status === "pass").length;
-}
+/* ---------- Progreso ---------- */
+function countPasses(){ return TEST_KEYS.filter(k => state.results[k].status === "pass").length; }
 function renderStatus(){
   $("#progressBadge").textContent = `${countPasses()} / ${TEST_KEYS.length} done`;
   const host = $("#statusList");
@@ -173,29 +150,21 @@ function renderStatus(){
   });
 }
 
-/* ---------- Utility: create camera stream ---------- */
+/* ---------- Util: cámara ---------- */
 async function startCamera(videoEl, facingMode){
   if(!navigator.mediaDevices?.getUserMedia){
     throw new Error("getUserMedia is not supported.");
   }
-  const constraints = {
-    video: { facingMode: facingMode || "user" },
-    audio: false
-  };
+  const constraints = { video: { facingMode: facingMode || "user" }, audio: false };
   const stream = await navigator.mediaDevices.getUserMedia(constraints);
   videoEl.srcObject = stream;
   await videoEl.play().catch(()=>{});
   return stream;
 }
-
 function stopStream(videoEl){
   const stream = videoEl?.srcObject;
-  if(stream){
-    stream.getTracks().forEach(t => t.stop());
-    videoEl.srcObject = null;
-  }
+  if(stream){ stream.getTracks().forEach(t => t.stop()); videoEl.srcObject = null; }
 }
-
 function captureToDataURL(videoEl, canvasEl){
   const w = videoEl.videoWidth || 1280;
   const h = videoEl.videoHeight || 720;
@@ -203,6 +172,26 @@ function captureToDataURL(videoEl, canvasEl){
   const ctx = canvasEl.getContext("2d");
   ctx.drawImage(videoEl, 0, 0, w, h);
   return canvasEl.toDataURL("image/jpeg", 0.92);
+}
+function stopAllMedia(){
+  stopStream($("#cosmeticVideo"));
+  stopStream($("#fVideo"));
+  stopStream($("#bVideo"));
+}
+
+/* ---------- NUEVO: helper de confirmación Pass/Fail ---------- */
+async function confirmPassFail(testKey, messageIfPass = "User confirmed OK", messageIfFail = "User reported an issue"){
+  // confirm() es simple y funciona en todos los navegadores móviles
+  const ok = window.confirm("Mark this test as PASS?\n\nTap 'OK' for PASS, 'Cancel' for FAIL.");
+  if(ok){
+    state.results[testKey].status = "pass";
+    state.results[testKey].msg = messageIfPass;
+  }else{
+    state.results[testKey].status = "fail";
+    state.results[testKey].msg = messageIfFail;
+  }
+  persist(); renderStatus();
+  return ok;
 }
 
 /* ---------- COSMETIC ---------- */
@@ -242,7 +231,7 @@ cos.btnBack.addEventListener("click", async ()=>{
     cos.msg.textContent = "Back camera ready. Tap Capture.";
   }catch(e){ cos.msg.textContent = e.message; }
 });
-cos.btnCapture.addEventListener("click", ()=>{
+cos.btnCapture.addEventListener("click", async ()=>{
   try{
     const url = captureToDataURL(cos.video, cos.canvas);
     if(cos.currentFacing === "user"){
@@ -256,7 +245,13 @@ cos.btnCapture.addEventListener("click", ()=>{
     state.results.cosmetic.status = both ? "pass" : "pending";
     state.results.cosmetic.msg = both ? "Both photos captured" : "One side captured";
     persist(); renderStatus();
-    cos.msg.textContent = both ? "PASS: Both photos captured." : "Captured. Take the other side to pass.";
+    if(both){
+      cos.msg.textContent = "Both photos captured.";
+      // NUEVO: confirmar con el usuario
+      await confirmPassFail("cosmetic", "Photos look acceptable", "Cosmetic issue reported");
+    }else{
+      cos.msg.textContent = "Captured. Take the other side to complete.";
+    }
   }catch(e){ cos.msg.textContent = e.message; }
 });
 cos.btnStop.addEventListener("click", ()=>{
@@ -266,13 +261,7 @@ cos.btnStop.addEventListener("click", ()=>{
   cos.msg.textContent = "Camera stopped.";
 });
 
-function stopAllMedia(){
-  stopStream(cos.video);
-  stopStream($("#fVideo"));
-  stopStream($("#bVideo"));
-}
-
-/* ---------- GPS ---------- */
+/* ---------- GPS (automático) ---------- */
 $("#gpsBtn").addEventListener("click", ()=>{
   const out = $("#gpsOut");
   const warn = $("#gpsWarn");
@@ -300,12 +289,11 @@ $("#gpsBtn").addEventListener("click", ()=>{
   }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
 });
 
-/* ---------- SPEAKER ---------- */
+/* ---------- SPEAKER (ya tenía confirmación) ---------- */
 let audioCtx = null, spkOsc = null, spkGain = null;
 $("#spkPlayBtn").addEventListener("click", ()=>{
   try{
     if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    // Build a simple 440Hz tone with gentle fade, 2s
     spkOsc = audioCtx.createOscillator();
     spkGain = audioCtx.createGain();
     spkOsc.type = "sine";
@@ -340,7 +328,7 @@ $("#spkNotHeardBtn").addEventListener("click", ()=>{
   $("#spkMsg").textContent = "Marked as FAIL.";
 });
 
-/* ---------- MICROPHONE ---------- */
+/* ---------- MICROPHONE (ya tenía confirmación) ---------- */
 const mic = {
   startBtn: $("#micStartBtn"),
   stopBtn: $("#micStopBtn"),
@@ -377,7 +365,6 @@ mic.startBtn.addEventListener("click", async ()=>{
       mic.denyBtn.disabled = false;
       state.results.microphone.blobUrl = url;
       mic.msg.textContent = "Playback ready. Can you hear your voice?";
-      // stop tracks (we already have the blob)
       mic.media.getTracks().forEach(t=>t.stop());
       mic.media = null;
     };
@@ -410,7 +397,7 @@ mic.denyBtn.addEventListener("click", ()=>{
   mic.msg.textContent = "Marked as FAIL.";
 });
 
-/* ---------- FRONT CAMERA ---------- */
+/* ---------- FRONT CAMERA (ahora con confirmación) ---------- */
 const f = {
   video: $("#fVideo"),
   canvas: $("#fCanvas"),
@@ -430,17 +417,22 @@ f.startBtn.addEventListener("click", async ()=>{
     f.msg.textContent = "Front camera ready.";
   }catch(e){ f.msg.textContent = e.message; }
 });
-f.captureBtn.addEventListener("click", ()=>{
+f.captureBtn.addEventListener("click", async ()=>{
   try{
     const url = captureToDataURL(f.video, f.canvas);
     f.img.src = url;
-    state.results.frontCamera.status = "pass";
     state.results.frontCamera.photo = url;
-    state.results.frontCamera.msg = "Captured";
-    // Cosmetic linkage: if front not set, reuse
+    // Antes se marcaba PASS directo; ahora pedimos confirmación
+    await confirmPassFail("frontCamera", "Front image looks clear", "Front image not acceptable");
+    // También puede alimentar Cosmetic si falta la frontal
     if(!state.results.cosmetic.front){ state.results.cosmetic.front = url; }
+    // Si ya hay ambas en cosmetic, marcar pass (y mantener su propio confirm)
+    if(state.results.cosmetic.front && state.results.cosmetic.back && state.results.cosmetic.status!=="fail"){
+      state.results.cosmetic.status = "pass";
+      state.results.cosmetic.msg = state.results.cosmetic.msg || "Both photos captured";
+    }
     persist(); renderStatus();
-    f.msg.textContent = "PASS: Photo captured.";
+    f.msg.textContent = "Captured.";
   }catch(e){ f.msg.textContent = e.message; }
 });
 f.stopBtn.addEventListener("click", ()=>{
@@ -449,7 +441,7 @@ f.stopBtn.addEventListener("click", ()=>{
   f.msg.textContent = "Camera stopped.";
 });
 
-/* ---------- BACK CAMERA ---------- */
+/* ---------- BACK CAMERA (ahora con confirmación) ---------- */
 const b = {
   video: $("#bVideo"),
   canvas: $("#bCanvas"),
@@ -469,21 +461,20 @@ b.startBtn.addEventListener("click", async ()=>{
     b.msg.textContent = "Back camera ready.";
   }catch(e){ b.msg.textContent = e.message; }
 });
-b.captureBtn.addEventListener("click", ()=>{
+b.captureBtn.addEventListener("click", async ()=>{
   try{
     const url = captureToDataURL(b.video, b.canvas);
     b.img.src = url;
-    state.results.backCamera.status = "pass";
     state.results.backCamera.photo = url;
-    state.results.backCamera.msg = "Captured";
+    // Confirmación con el usuario
+    await confirmPassFail("backCamera", "Back image looks clear", "Back image not acceptable");
     if(!state.results.cosmetic.back){ state.results.cosmetic.back = url; }
-    // If cosmetic now has both, update to pass
-    if(state.results.cosmetic.front && state.results.cosmetic.back){
+    if(state.results.cosmetic.front && state.results.cosmetic.back && state.results.cosmetic.status!=="fail"){
       state.results.cosmetic.status = "pass";
-      state.results.cosmetic.msg = "Both photos captured";
+      state.results.cosmetic.msg = state.results.cosmetic.msg || "Both photos captured";
     }
     persist(); renderStatus();
-    b.msg.textContent = "PASS: Photo captured.";
+    b.msg.textContent = "Captured.";
   }catch(e){ b.msg.textContent = e.message; }
 });
 b.stopBtn.addEventListener("click", ()=>{
@@ -492,16 +483,11 @@ b.stopBtn.addEventListener("click", ()=>{
   b.msg.textContent = "Camera stopped.";
 });
 
-/* ---------- TOUCHSCREEN ---------- */
-const tCan = $("#touchCanvas");
-const tCtx = tCan.getContext("2d");
-let touchCount = 0;
-
+/* ---------- TOUCHSCREEN (automático) ---------- */
 function drawDot(ctx, x, y, color){
   ctx.fillStyle = color || "#7eb3ff";
   ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI*2); ctx.fill();
 }
-
 function setTouchHandlers(canvas, isMulti){
   const msgEl = isMulti ? $("#multiMsg") : $("#touchMsg");
   const key = isMulti ? "multitouch" : "touchscreen";
@@ -511,7 +497,8 @@ function setTouchHandlers(canvas, isMulti){
     e.preventDefault();
     const touches = Array.from(e.touches);
     maxTouches = Math.max(maxTouches, touches.length);
-    touches.forEach(t => drawDot(canvas.getContext("2d"), t.clientX - canvas.getBoundingClientRect().left, t.clientY - canvas.getBoundingClientRect().top, isMulti ? "#7dffb6" : "#7eb3ff"));
+    const rect = canvas.getBoundingClientRect();
+    touches.forEach(t => drawDot(canvas.getContext("2d"), t.clientX - rect.left, t.clientY - rect.top, isMulti ? "#7dffb6" : "#7eb3ff"));
     if(!isMulti){
       state.results.touchscreen.taps += touches.length;
       state.results.touchscreen.status = "pass";
@@ -546,11 +533,10 @@ function setTouchHandlers(canvas, isMulti){
     msgEl.textContent = state.results[key].msg;
   });
 }
-
 setTouchHandlers($("#touchCanvas"), false);
 setTouchHandlers($("#multiCanvas"), true);
 
-/* ---------- DISPLAY ---------- */
+/* ---------- DISPLAY (ya tenía confirmación con botones) ---------- */
 (function initDisplayInfo(){
   const info = {
     width: window.screen.width,
@@ -568,7 +554,6 @@ setTouchHandlers($("#multiCanvas"), true);
   state.results.display.msg = "Info read; run color test";
   persist(); renderStatus();
 })();
-
 let dispTimer = null, dispStep = 0;
 const dispArea = $("#displayTestArea");
 $("#dispStartBtn").addEventListener("click", ()=>{
@@ -604,13 +589,12 @@ $("#dispBadBtn").addEventListener("click", ()=>{
   $("#displayMsg").textContent = "Marked as FAIL.";
 });
 
-/* ---------- ACCELEROMETER ---------- */
+/* ---------- ACCELEROMETER (automático) ---------- */
 let accelHandler = null;
 $("#accelPermBtn").addEventListener("click", async ()=>{
   const out = $("#accelOut"), warn = $("#accelWarn");
   warn.textContent = ""; out.textContent = "";
   try{
-    // iOS 13+ requires explicit permission request in a user gesture
     if(typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function"){
       const perm = await DeviceMotionEvent.requestPermission();
       if(perm !== "granted"){ throw new Error("Motion permission denied."); }
@@ -634,14 +618,13 @@ $("#accelPermBtn").addEventListener("click", async ()=>{
     renderStatus(); persist();
   }
 });
-
 $("#accelStopBtn").addEventListener("click", ()=>{
   if(accelHandler){ window.removeEventListener("devicemotion", accelHandler); accelHandler = null; }
   $("#accelStopBtn").disabled = true;
   $("#accelOut").textContent += "\nStopped.";
 });
 
-/* ---------- GYROSCOPE ---------- */
+/* ---------- GYROSCOPE (automático) ---------- */
 let gyroHandler = null;
 $("#gyroPermBtn").addEventListener("click", async ()=>{
   const out = $("#gyroOut"), warn = $("#gyroWarn");
@@ -675,7 +658,7 @@ $("#gyroStopBtn").addEventListener("click", ()=>{
   $("#gyroOut").textContent += "\nStopped.";
 });
 
-/* ---------- BATTERY ---------- */
+/* ---------- BATTERY (automático) ---------- */
 $("#batteryBtn").addEventListener("click", async ()=>{
   const out = $("#batteryOut"), warn = $("#batteryWarn");
   out.textContent = ""; warn.textContent = "";
@@ -685,8 +668,8 @@ $("#batteryBtn").addEventListener("click", async ()=>{
     const info = {
       level: Math.round(b.level * 100) + "%",
       charging: b.charging,
-      chargingTime: b.chargingTime,     // seconds until full (if charging)
-      dischargingTime: b.dischargingTime // seconds until empty (if not charging)
+      chargingTime: b.chargingTime,
+      dischargingTime: b.dischargingTime
     };
     out.textContent = JSON.stringify(info, null, 2);
     state.results.battery.status = "pass";
@@ -703,7 +686,7 @@ $("#batteryBtn").addEventListener("click", async ()=>{
   }
 });
 
-/* ---------- REPORTS ---------- */
+/* ---------- Reportes ---------- */
 function summarize(){
   const lines = [];
   lines.push(`Phone Inspection Report`);
@@ -726,7 +709,6 @@ function summarize(){
   });
   return lines.join("\n");
 }
-
 function buildHTMLReport(){
   const css = `
     body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;padding:16px;color:#111;background:#fff}
@@ -783,34 +765,28 @@ function buildHTMLReport(){
   </body></html>`;
 }
 
+/* ---------- Acciones de Reporte ---------- */
 $("#generateReportBtn").addEventListener("click", ()=>{
   const text = summarize();
   alert("Report generated.\n\nUse Share or Copy buttons below.\n\nPreview available via 'Open Full Report'.");
 });
-
 $("#shareReportBtn").addEventListener("click", async ()=>{
   const text = summarize();
   const shareData = { title: "Phone Inspection Report", text };
   if(navigator.canShare && navigator.canShare(shareData) && navigator.share){
-    try {
-      await navigator.share(shareData);
-    } catch(e){
-      alert("Share canceled or failed.");
-    }
+    try { await navigator.share(shareData); }
+    catch(e){ alert("Share canceled or failed."); }
   } else {
-    // WhatsApp fallback link with encoded text (opens app or web)
     const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
     window.open(url, '_blank');
   }
 });
-
 $("#copyReportBtn").addEventListener("click", async ()=>{
   const text = summarize();
   try{
     await navigator.clipboard.writeText(text);
     alert("Report text copied! Paste it into WhatsApp or any chat.");
   }catch(e){
-    // Old fallback
     const ta = document.createElement("textarea");
     ta.value = text;
     document.body.appendChild(ta); ta.select(); document.execCommand("copy");
@@ -818,20 +794,12 @@ $("#copyReportBtn").addEventListener("click", async ()=>{
     alert("Report text copied (fallback).");
   }
 });
-
 $("#openReportBtn").addEventListener("click", ()=>{
   const html = buildHTMLReport();
   const w = window.open("", "_blank");
   w.document.open(); w.document.write(html); w.document.close();
 });
 
-/* ---------- Wire dashboard buttons ---------- */
-$$("[data-open]").forEach(btn=>{
-  btn.addEventListener("click", ()=> { /* panel opens in openPanel() above */ });
-});
-
-/* ---------- Misc ---------- */
+/* ---------- Misceláneo ---------- */
 window.addEventListener("beforeunload", ()=> stopAllMedia());
-
-// If user already had IMEI stored, jump to dashboard on load
 if(state.imei){ showDashboard(); renderStatus(); }
