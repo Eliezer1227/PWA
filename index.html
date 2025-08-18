@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Phone Inspection PWA</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0d6efd" />
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- Minimal web app manifest (inlined). script.js will attach it as a real <link rel="manifest"> -->
+  <!-- Icons are optional; add PNGs later if you want install banners on Android/Chrome. -->
+  <script id="app-manifest" type="application/json">
+  {
+    "name": "Phone Inspection",
+    "short_name": "Inspection",
+    "start_url": "./",
+    "display": "standalone",
+    "background_color": "#ffffff",
+    "theme_color": "#0d6efd",
+    "description": "Device inspection tool for cameras, GPS, audio, sensors, battery, and display.",
+    "icons": []
+  }
+  </script>
+</head>
+<body>
+  <header class="app-header">
+    <h1>Phone Inspection</h1>
+    <p class="subtitle">Register IMEI · Run tests · Generate report</p>
+  </header>
+
+  <!-- IMEI Registration -->
+  <main id="registerView" class="view active">
+    <section class="card">
+      <h2>Register Device IMEI</h2>
+      <p>Enter the 15-digit IMEI of this device. It will be kept locally for this session.</p>
+      <label for="imeiInput" class="sr">IMEI</label>
+      <input id="imeiInput" type="text" inputmode="numeric" pattern="\\d{15}" maxlength="15"
+             placeholder="Enter IMEI (15 digits)" autocomplete="off" />
+      <button id="registerBtn" class="btn primary">Register IMEI</button>
+      <p class="muted">We never upload this data. It’s stored in <code>localStorage</code> only.</p>
+      <div id="imeiError" class="error" role="alert" aria-live="assertive"></div>
+    </section>
+  </main>
+
+  <!-- Dashboard -->
+  <main id="dashboardView" class="view">
+    <section class="card">
+      <div class="row between">
+        <h2>Test Dashboard</h2>
+        <div class="badge" id="progressBadge">0 / 12 done</div>
+      </div>
+      <p class="muted">IMEI: <span id="imeiDisplay">—</span></p>
+
+      <div class="grid">
+        <!-- 12 test buttons. Each opens its test panel -->
+        <button class="btn outline" data-open="cosmeticPanel">Cosmetic (Front/Back Photos)</button>
+        <button class="btn outline" data-open="gpsPanel">GPS</button>
+        <button class="btn outline" data-open="speakerPanel">Speaker</button>
+        <button class="btn outline" data-open="microphonePanel">Microphone</button>
+        <button class="btn outline" data-open="frontCamPanel">Front Camera</button>
+        <button class="btn outline" data-open="backCamPanel">Back Camera</button>
+        <button class="btn outline" data-open="touchPanel">Touchscreen</button>
+        <button class="btn outline" data-open="multiTouchPanel">Multitouch</button>
+        <button class="btn outline" data-open="displayPanel">Display</button>
+        <button class="btn outline" data-open="accelPanel">Accelerometer</button>
+        <button class="btn outline" data-open="gyroPanel">Gyroscope</button>
+        <button class="btn outline" data-open="batteryPanel">Battery Health</button>
+      </div>
+
+      <div class="status-list" id="statusList"></div>
+
+      <div class="row wrap gap">
+        <button id="generateReportBtn" class="btn success">Generate Report</button>
+        <button id="shareReportBtn" class="btn">Share Report</button>
+        <button id="copyReportBtn" class="btn">Copy Report Text</button>
+        <button id="openReportBtn" class="btn">Open Full Report</button>
+      </div>
+      <p class="muted">Sharing uses the Web Share API if available, otherwise we provide copy-to-clipboard.</p>
+    </section>
+  </main>
+
+  <!-- Panels (lightweight “modal” sections) -->
+  <section id="panelOverlay" class="overlay" aria-hidden="true">
+    <!-- Cosmetic -->
+    <div id="cosmeticPanel" class="panel">
+      <div class="panel-head">
+        <h3>Cosmetic Check</h3>
+        <button class="icon-btn" data-close>&times;</button>
+      </div>
+      <p>Take front (selfie/mirror) and back photos. If both are captured, the test will be marked as PASS.</p>
+
+      <div class="row wrap gap">
+        <button class="btn" id="cosStartFrontBtn">Use Front Camera</button>
+        <button class="btn" id="cosStartBackBtn">Use Back Camera</button>
+        <button class="btn outline" id="cosCaptureBtn" disabled>Capture Photo</button>
+        <button class="btn danger outline" id="cosStopBtn" disabled>Stop Camera</button>
+      </div>
+
+      <div class="media">
+        <video id="cosmeticVideo" playsinline autoplay muted></video>
+        <canvas id="cosmeticCanvas" class="hide"></canvas>
+      </div>
+
+      <div class="thumbs">
+        <div>
+          <h4>Front Photo</h4>
+          <img id="cosFrontImg" alt="Front cosmetic photo preview" />
+        </div>
+        <div>
+          <h4>Back Photo</h4>
+          <img id="cosBackImg" alt="Back cosmetic photo preview" />
+        </div>
+      </div>
+      <div id="cosmeticMsg" class="muted"></div>
+    </div>
+
+    <!-- GPS -->
+    <div id="gpsPanel" class="panel">
+      <div class="panel-head">
+        <h3>GPS</h3>
+        <button class="icon-btn" data-close>&times;</button>
+      </div>
+      <p>Test geolocation. Requires user permission and HTTPS hosting.</p>
+      <button id="gpsBtn" class="btn">Get Current Position</button>
+      <pre id="gpsOut" class="pre"></pre>
+      <div class="warn" id="gpsWarn"></div>
+    </div>
+
+    <!-- Speaker -->
+    <div id="speakerPanel" class="panel">
+      <div class="panel-head">
+        <h3>Speaker</h3>
+        <button class="icon-btn" data-close>&times;</button>
+      </div>
+      <p>Tap “Play Test Tone” and confirm if you hear it.</p>
+      <div class="row wrap gap">
+        <button id="spkPlayBtn" class="btn">Play Test Tone</button>
+        <button id="spkHeardBtn" class="btn success outline">I can hear it</button>
+        <button id="spkNotHeardBtn" class="btn danger outline">I cannot hear it</button>
+      </div>
+      <div id="spkMsg" class="muted"></div>
+    </div>
+
+    <!-- Microphone -->
+    <div id="microphonePanel" class="panel">
+      <div class="panel-head">
+        <h3>Microphone</h3>
+        <button class="icon-btn" data-close>&times;</button>
+      </div>
+      <p>Record a short clip and play it back to confirm microphone works.</p>
+      <div class="row wrap gap">
+        <button id="micStartBtn" class="btn">Start Recording</button>
+        <button id="micStopBtn" class="btn outline" disabled>Stop</button>
+        <button id="micConfirmBtn" class="btn success outline" disabled>I can hear playback</button>
+        <button id="micDenyBtn" class="btn danger outline" disabled>I cannot hear playback</button>
+      </div>
+      <audio id="micAudio" controls class="hide"></audio>
+      <div id="micMsg" class="muted"></div>
+      <div class="warn" id="micWarn"></div>
+    </div>
+
+    <!-- Front Camera -->
+    <div id="frontCamPanel" class="panel">
+      <div class="panel-head">
+        <h3>Front Camera</h3>
+        <button class="icon-btn" data-close>&times;</button>
+      </div>
+      <p>Preview should show your face (selfie). Capture to pass.</p>
+      <div class="row wrap gap">
+        <button id="fStartBtn" class="btn">Start Front Camera</button>
+        <button id="fCaptureBtn" class="btn outline" disabled>Capture</button>
+        <button id="fStopBtn" class="btn danger outline" disabled>Stop</button>
+      </div>
+      <div class="media">
+        <video id="fVideo" playsinline autoplay muted></video>
+        <canvas id="fCanvas" class="hide"></canvas>
+      </div>
+      <img id="fImg" alt="Front camera capture" />
+      <div id="fMsg" class="muted"></div>
+    </div>
+
+    <!-- Back Camera -->
+    <div id="backCamPanel" class="panel">
+      <div class="panel-head">
+        <h3>Back Camera</h3>
+        <button class="icon-btn" data-close>&times;</button>
+      </div>
+      <p>Preview should show environment. Capture to pass.</p>
+      <div class="row wrap gap">
+        <button id="bStartBtn" class="btn">Start Back Camera</button>
+        <button id="bCaptureBtn" class="btn outline" disabled>Capture</button>
+        <button id="bStopBtn" class="btn danger outline" disabled>Stop</button>
+      </div>
+      <div class="media">
+        <video id="bVideo" playsinline autoplay muted></video>
+        <canvas id="bCanvas" class="hide"></canvas>
+      </div>
+      <img id="bImg" alt="Back camera capture" />
+      <div id="bMsg" class="muted"></div>
+    </div>
+
+    <!-- Touchscreen -->
+    <div id="touchPanel" class="panel">
+      <div class="panel-head">
+        <h3>Touchscreen</h3>
+        <button class="icon-btn" data-close>&times;</button>
+      </div>
+      <p>Tap or draw on the canvas. If any touch/mouse input is detected, the test will pass.</p>
+      <canvas id="touchCanvas" width="320" height="420"></canvas>
+      <div id="touchMsg" class="muted"></div>
+    </div>
+
+    <!-- Multitouch -->
+    <div id="multiTouchPanel" class="panel">
+      <div class="panel-head">
+        <h3>Multitouch</h3>
+        <button class="icon-btn" data-close>&times;</button>
+      </div>
+      <p>Place two (or more) fingers on the canvas at once. Passes when 2+ points are detected simultaneously.</p>
+      <canvas id="multiCanvas" width="320" height="420"></canvas>
+      <div id="multiMsg" class="muted"></div>
+    </div>
+
+    <!-- Display -->
+    <div id="displayPanel" class="panel">
+      <div class="panel-head">
+        <h3>Display</h3>
+        <button class="icon-btn" data-close>&times;</button>
+      </div>
+      <p>We’ll read resolution and color depth, and show a quick color test.</p>
+      <pre id="displayInfo" class="pre"></pre>
+      <div class="row wrap gap">
+        <button id="dispStartBtn" class="btn">Start Color Test</button>
+        <button id="dispStopBtn" class="btn outline" disabled>Stop</button>
+        <button id="dispOkBtn" class="btn success outline">Looks OK</button>
+        <button id="dispBadBtn" class="btn danger outline">Looks Wrong</button>
+      </div>
+      <div id="displayTestArea" class="display-test"></div>
+      <div id="displayMsg" class="muted"></div>
+    </div>
+
+    <!-- Accelerometer -->
+    <div id="accelPanel" class="panel">
+      <div class="panel-head">
+        <h3>Accelerometer</h3>
+        <button class="icon-btn" data-close>&times;</button>
+      </div>
+      <p>Grant motion permission (iOS requires this). Shake or move the device to see values.</p>
+      <button id="accelPermBtn" class="btn">Request Permission / Start</button>
+      <button id="accelStopBtn" class="btn outline" disabled>Stop</button>
+      <pre id="accelOut" class="pre"></pre>
+      <div id="accelMsg" class="muted"></div>
+      <div class="warn" id="accelWarn"></div>
+    </div>
+
+    <!-- Gyroscope -->
+    <div id="gyroPanel" class="panel">
+      <div class="panel-head">
+        <h3>Gyroscope</h3>
+        <button class="icon-btn" data-close>&times;</button>
+      </div>
+      <p>Grant orientation permission (iOS requires this). Rotate the device to see values.</p>
+      <button id="gyroPermBtn" class="btn">Request Permission / Start</button>
+      <button id="gyroStopBtn" class="btn outline" disabled>Stop</button>
+      <pre id="gyroOut" class="pre"></pre>
+      <div id="gyroMsg" class="muted"></div>
+      <div class="warn" id="gyroWarn"></div>
+    </div>
+
+    <!-- Battery -->
+    <div id="batteryPanel" class="panel">
+      <div class="panel-head">
+        <h3>Battery Health</h3>
+        <button class="icon-btn" data-close>&times;</button>
+      </div>
+      <p>Reads battery level, charging status, and timing. “Health” metrics are not exposed by most browsers.</p>
+      <button id="batteryBtn" class="btn">Check Battery</button>
+      <pre id="batteryOut" class="pre"></pre>
+      <div class="warn" id="batteryWarn"></div>
+    </div>
+  </section>
+
+  <footer class="app-footer">
+    <small>&copy; <span id="year"></span> Phone Inspection · Works best over HTTPS. iOS has stricter permissions.</small>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
