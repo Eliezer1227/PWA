@@ -1,13 +1,15 @@
-/* Phone Inspection PWA — Vanilla JS (Actualizado con confirmaciones)
-   - Añade confirmación Pass/Fail en pruebas NO automáticas (o cuando conviene validar visualmente).
-   - Mantiene automáticas: GPS / Touch / Multitouch / Accelerometer / Gyroscope / Battery.
-   - Mantiene confirmación ya existente: Speaker / Microphone / Display.
+/* Phone Inspection PWA — Vanilla JS (Actualizado)
+   - Validación y almacenamiento de IMEI (localStorage)
+   - 12 pruebas: cámaras, GPS, altavoz, micrófono, touch, multitouch, display, acelerómetro, giroscopio, batería
+   - Confirmación Pass/Fail en pruebas no-automáticas
+   - Botón "Start Over": compartir (opcional) y borrar (localStorage + Cache Storage)
+   - Reporte en texto y HTML + compartir/copy
 */
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
-/* ---------- Adjuntar manifest inlined ---------- */
+/* ---------- Adjuntar manifest inline como <link rel="manifest"> ---------- */
 (function attachManifest(){
   try{
     const json = $("#app-manifest")?.textContent?.trim();
@@ -22,7 +24,7 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   }catch(e){ /* ignore */ }
 })();
 
-/* ---------- (Opcional) Registrar Service Worker si existe sw.js ---------- */
+/* ---------- (Opcional) Registrar Service Worker si tienes sw.js ---------- */
 // Descomenta si ya agregaste sw.js
 // if ('serviceWorker' in navigator) {
 //   navigator.serviceWorker.register('./sw.js')
@@ -150,7 +152,7 @@ function renderStatus(){
   });
 }
 
-/* ---------- Util: cámara ---------- */
+/* ---------- Util cámara/media ---------- */
 async function startCamera(videoEl, facingMode){
   if(!navigator.mediaDevices?.getUserMedia){
     throw new Error("getUserMedia is not supported.");
@@ -181,7 +183,6 @@ function stopAllMedia(){
 
 /* ---------- NUEVO: helper de confirmación Pass/Fail ---------- */
 async function confirmPassFail(testKey, messageIfPass = "User confirmed OK", messageIfFail = "User reported an issue"){
-  // confirm() es simple y funciona en todos los navegadores móviles
   const ok = window.confirm("Mark this test as PASS?\n\nTap 'OK' for PASS, 'Cancel' for FAIL.");
   if(ok){
     state.results[testKey].status = "pass";
@@ -247,7 +248,7 @@ cos.btnCapture.addEventListener("click", async ()=>{
     persist(); renderStatus();
     if(both){
       cos.msg.textContent = "Both photos captured.";
-      // NUEVO: confirmar con el usuario
+      // Confirmación manual final
       await confirmPassFail("cosmetic", "Photos look acceptable", "Cosmetic issue reported");
     }else{
       cos.msg.textContent = "Captured. Take the other side to complete.";
@@ -289,7 +290,7 @@ $("#gpsBtn").addEventListener("click", ()=>{
   }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
 });
 
-/* ---------- SPEAKER (ya tenía confirmación) ---------- */
+/* ---------- SPEAKER (confirmación por botones) ---------- */
 let audioCtx = null, spkOsc = null, spkGain = null;
 $("#spkPlayBtn").addEventListener("click", ()=>{
   try{
@@ -328,7 +329,7 @@ $("#spkNotHeardBtn").addEventListener("click", ()=>{
   $("#spkMsg").textContent = "Marked as FAIL.";
 });
 
-/* ---------- MICROPHONE (ya tenía confirmación) ---------- */
+/* ---------- MICROPHONE (confirmación por botones) ---------- */
 const mic = {
   startBtn: $("#micStartBtn"),
   stopBtn: $("#micStopBtn"),
@@ -422,11 +423,8 @@ f.captureBtn.addEventListener("click", async ()=>{
     const url = captureToDataURL(f.video, f.canvas);
     f.img.src = url;
     state.results.frontCamera.photo = url;
-    // Antes se marcaba PASS directo; ahora pedimos confirmación
     await confirmPassFail("frontCamera", "Front image looks clear", "Front image not acceptable");
-    // También puede alimentar Cosmetic si falta la frontal
     if(!state.results.cosmetic.front){ state.results.cosmetic.front = url; }
-    // Si ya hay ambas en cosmetic, marcar pass (y mantener su propio confirm)
     if(state.results.cosmetic.front && state.results.cosmetic.back && state.results.cosmetic.status!=="fail"){
       state.results.cosmetic.status = "pass";
       state.results.cosmetic.msg = state.results.cosmetic.msg || "Both photos captured";
@@ -466,7 +464,6 @@ b.captureBtn.addEventListener("click", async ()=>{
     const url = captureToDataURL(b.video, b.canvas);
     b.img.src = url;
     state.results.backCamera.photo = url;
-    // Confirmación con el usuario
     await confirmPassFail("backCamera", "Back image looks clear", "Back image not acceptable");
     if(!state.results.cosmetic.back){ state.results.cosmetic.back = url; }
     if(state.results.cosmetic.front && state.results.cosmetic.back && state.results.cosmetic.status!=="fail"){
@@ -536,7 +533,7 @@ function setTouchHandlers(canvas, isMulti){
 setTouchHandlers($("#touchCanvas"), false);
 setTouchHandlers($("#multiCanvas"), true);
 
-/* ---------- DISPLAY (ya tenía confirmación con botones) ---------- */
+/* ---------- DISPLAY (confirmación por botones) ---------- */
 (function initDisplayInfo(){
   const info = {
     width: window.screen.width,
@@ -589,7 +586,7 @@ $("#dispBadBtn").addEventListener("click", ()=>{
   $("#displayMsg").textContent = "Marked as FAIL.";
 });
 
-/* ---------- ACCELEROMETER (automático) ---------- */
+/* ---------- ACCELEROMETER (automático con permiso iOS) ---------- */
 let accelHandler = null;
 $("#accelPermBtn").addEventListener("click", async ()=>{
   const out = $("#accelOut"), warn = $("#accelWarn");
@@ -624,7 +621,7 @@ $("#accelStopBtn").addEventListener("click", ()=>{
   $("#accelOut").textContent += "\nStopped.";
 });
 
-/* ---------- GYROSCOPE (automático) ---------- */
+/* ---------- GYROSCOPE (automático con permiso iOS) ---------- */
 let gyroHandler = null;
 $("#gyroPermBtn").addEventListener("click", async ()=>{
   const out = $("#gyroOut"), warn = $("#gyroWarn");
@@ -709,6 +706,7 @@ function summarize(){
   });
   return lines.join("\n");
 }
+
 function buildHTMLReport(){
   const css = `
     body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;padding:16px;color:#111;background:#fff}
@@ -765,21 +763,26 @@ function buildHTMLReport(){
   </body></html>`;
 }
 
-/* ---------- Acciones de Reporte ---------- */
+/* ---------- Compartir / Copiar ---------- */
+// Helper para compartir nativo o WhatsApp
+async function shareTextOrWhatsApp(text) {
+  const shareData = { title: "Phone Inspection Report", text };
+  if (navigator.canShare && navigator.canShare(shareData) && navigator.share) {
+    try { await navigator.share(shareData); return true; }
+    catch (e) { /* cancelado o falló → fallback */ }
+  }
+  const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+  window.open(url, '_blank');
+  return true;
+}
+
 $("#generateReportBtn").addEventListener("click", ()=>{
-  const text = summarize();
+  summarize(); // generar internamente
   alert("Report generated.\n\nUse Share or Copy buttons below.\n\nPreview available via 'Open Full Report'.");
 });
 $("#shareReportBtn").addEventListener("click", async ()=>{
   const text = summarize();
-  const shareData = { title: "Phone Inspection Report", text };
-  if(navigator.canShare && navigator.canShare(shareData) && navigator.share){
-    try { await navigator.share(shareData); }
-    catch(e){ alert("Share canceled or failed."); }
-  } else {
-    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
-    window.open(url, '_blank');
-  }
+  await shareTextOrWhatsApp(text);
 });
 $("#copyReportBtn").addEventListener("click", async ()=>{
   const text = summarize();
@@ -798,6 +801,84 @@ $("#openReportBtn").addEventListener("click", ()=>{
   const html = buildHTMLReport();
   const w = window.open("", "_blank");
   w.document.open(); w.document.write(html); w.document.close();
+});
+
+/* ---------- START OVER: compartir (opcional) → borrar → volver al inicio ---------- */
+// Estado limpio para reinicio
+function freshResults() {
+  return {
+    cosmetic: { status: "pending", front:null, back:null, msg:"" },
+    gps: { status: "pending", coords:null, accuracy:null, msg:"" },
+    speaker: { status: "pending", heard:null, msg:"" },
+    microphone: { status: "pending", blobUrl:null, msg:"" },
+    frontCamera: { status: "pending", photo:null, msg:"" },
+    backCamera: { status: "pending", photo:null, msg:"" },
+    touchscreen: { status: "pending", taps:0, msg:"" },
+    multitouch: { status: "pending", maxTouches:0, msg:"" },
+    display: { status: "pending", pixels:null, ratio:null, depth:null, looksOk:null, msg:"" },
+    accelerometer: { status: "pending", samples:0, last:null, msg:"" },
+    gyroscope: { status: "pending", samples:0, last:null, msg:"" },
+    battery: { status: "pending", level:null, charging:null, times:null, msg:"" }
+  };
+}
+
+// Borra localStorage + Cache Storage (y opcional: desregistra SW)
+async function wipeAllStorageAndCaches({ unregisterSW = false } = {}) {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+    if (window.caches && caches.keys) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+    if (unregisterSW && 'serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r => r.unregister()));
+    }
+  } catch (e) {
+    console.warn("Wipe error:", e);
+  }
+}
+
+// Restablece UI/estado y vuelve a la vista de registro
+function resetAppToStart() {
+  stopAllMedia();
+  state.imei = null;
+  state.startedAt = null;
+  state.results = freshResults();
+
+  $("#imeiInput").value = "";
+  $("#imeiError").textContent = "";
+  $("#statusList").innerHTML = "";
+  $("#progressBadge").textContent = `0 / ${TEST_KEYS.length} done`;
+
+  if (overlay.classList.contains("show")) {
+    overlay.classList.remove("show");
+    overlay.setAttribute("aria-hidden","true");
+  }
+
+  $("#dashboardView").classList.remove("active");
+  $("#registerView").classList.add("active");
+  $("#imeiDisplay").textContent = "—";
+}
+
+// Botón Start Over (definido en index.html)
+$("#startOverBtn").addEventListener("click", async () => {
+  const wantsToShare = window.confirm(
+    "Before starting over, would you like to share the current report?\n\nPress OK to share, or Cancel to skip."
+  );
+
+  if (wantsToShare) {
+    const text = summarize();
+    await shareTextOrWhatsApp(text);
+    const confirmErase = window.confirm(
+      "Do you want to wipe all current data and start over?"
+    );
+    if (!confirmErase) return;
+  }
+
+  await wipeAllStorageAndCaches({ unregisterSW: false }); // cambia a true si deseas quitar también el SW
+  resetAppToStart();
+  alert("All data cleared. You can register a new IMEI now.");
 });
 
 /* ---------- Misceláneo ---------- */
