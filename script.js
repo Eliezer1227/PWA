@@ -1,15 +1,16 @@
-/* Phone Inspection PWA — Vanilla JS (Actualizado)
-   - Validación y almacenamiento de IMEI (localStorage)
-   - 12 pruebas: cámaras, GPS, altavoz, micrófono, touch, multitouch, display, acelerómetro, giroscopio, batería
-   - Confirmación Pass/Fail en pruebas no-automáticas
-   - Botón "Start Over": compartir (opcional) y borrar (localStorage + Cache Storage)
-   - Reporte en texto y HTML + compartir/copy
+/* Phone Inspection PWA — script.js (Aug 2025)
+   Cambios:
+   - GPS: permissions + mensajes y reintentos
+   - Speaker: unlock/ resume WebAudio + fallback <audio>
+   - Microphone: mejor manejo; fallback monitor con VU meter si no hay MediaRecorder
+   - Touchscreen: fullscreen grid con timeout 45s y confirmación
+   - Display: fullscreen, cambio de color por toque, confirmación al final
 */
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
-/* ---------- Adjuntar manifest inline como <link rel="manifest"> ---------- */
+/* ---------- Manifest inline ---------- */
 (function attachManifest(){
   try{
     const json = $("#app-manifest")?.textContent?.trim();
@@ -21,16 +22,14 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
       link.href = url;
       document.head.appendChild(link);
     }
-  }catch(e){ /* ignore */ }
+  }catch(e){}
 })();
 
-/* ---------- (Opcional) Registrar Service Worker si tienes sw.js ---------- */
-// Descomenta si ya agregaste sw.js
-// if ('serviceWorker' in navigator) {
-//   navigator.serviceWorker.register('./sw.js')
-//     .then(()=>console.log('SW registered'))
-//     .catch(console.warn);
-// }
+/* ---------- (Opcional) SW ----------
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(console.warn);
+}
+------------------------------------- */
 
 $("#year").textContent = new Date().getFullYear();
 
@@ -61,19 +60,15 @@ const state = {
 
 const STORAGE_KEY = "inspection_v1";
 
-/* ---------- Utilidades de estado ---------- */
+/* ---------- Helpers de estado ---------- */
 function isValidIMEI(v){ return /^\d{15}$/.test(v); }
-
 function persist(){
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    imei: state.imei,
-    startedAt: state.startedAt,
-    results: state.results
+    imei: state.imei, startedAt: state.startedAt, results: state.results
   }));
 }
-
 function hydrate(){
-  try {
+  try{
     const raw = localStorage.getItem(STORAGE_KEY);
     if(!raw) return;
     const saved = JSON.parse(raw);
@@ -81,13 +76,12 @@ function hydrate(){
       state.imei = saved.imei;
       state.startedAt = saved.startedAt || new Date().toISOString();
       Object.assign(state.results, saved.results || {});
-      showDashboard();
-      renderStatus();
+      showDashboard(); renderStatus();
     }
-  } catch(e){ console.warn(e); }
+  }catch(e){ console.warn(e); }
 }
 
-/* ---------- IMEI ---------- */
+/* ---------- Registro IMEI ---------- */
 const imeiInput = $("#imeiInput");
 const imeiError = $("#imeiError");
 const imeiDisplay = $("#imeiDisplay");
@@ -111,10 +105,9 @@ function showDashboard(){
   $("#dashboardView").classList.add("active");
   imeiDisplay.textContent = state.imei || "—";
 }
-
 hydrate();
 
-/* ---------- Paneles ---------- */
+/* ---------- Paneles / Overlay ---------- */
 const overlay = $("#panelOverlay");
 function openPanel(id){
   overlay.classList.add("show");
@@ -127,6 +120,7 @@ function closePanel(){
   overlay.classList.remove("show");
   overlay.setAttribute("aria-hidden","true");
   stopAllMedia();
+  exitFullscreenSafe();
 }
 overlay.addEventListener("click", (e) => { if(e.target === overlay) closePanel(); });
 $$("[data-close]", overlay).forEach(btn => btn.addEventListener("click", closePanel));
@@ -150,6 +144,23 @@ function renderStatus(){
     `;
     host.appendChild(div);
   });
+}
+
+/* ---------- Util pantalla completa ---------- */
+async function enterFullscreen(el){
+  try{
+    if(el.requestFullscreen) await el.requestFullscreen();
+    else if(el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    else if(el.msRequestFullscreen) el.msRequestFullscreen();
+  }catch(e){}
+}
+async function exitFullscreenSafe(){
+  try{
+    if(document.fullscreenElement || document.webkitFullscreenElement){
+      if(document.exitFullscreen) await document.exitFullscreen();
+      else if(document.webkitExitFullscreen) document.webkitExitFullscreen();
+    }
+  }catch(e){}
 }
 
 /* ---------- Util cámara/media ---------- */
@@ -181,7 +192,7 @@ function stopAllMedia(){
   stopStream($("#bVideo"));
 }
 
-/* ---------- NUEVO: helper de confirmación Pass/Fail ---------- */
+/* ---------- Confirmación Pass/Fail ---------- */
 async function confirmPassFail(testKey, messageIfPass = "User confirmed OK", messageIfFail = "User reported an issue"){
   const ok = window.confirm("Mark this test as PASS?\n\nTap 'OK' for PASS, 'Cancel' for FAIL.");
   if(ok){
@@ -195,7 +206,9 @@ async function confirmPassFail(testKey, messageIfPass = "User confirmed OK", mes
   return ok;
 }
 
-/* ---------- COSMETIC ---------- */
+/* =========================================================
+   COSMETIC
+========================================================= */
 const cos = {
   video: $("#cosmeticVideo"),
   canvas: $("#cosmeticCanvas"),
@@ -208,13 +221,11 @@ const cos = {
   msg: $("#cosmeticMsg"),
   currentFacing: null
 };
-let cosStream = null;
-
 cos.btnFront.addEventListener("click", async ()=>{
   try{
     cos.msg.textContent = "Opening front camera...";
     stopStream(cos.video);
-    cosStream = await startCamera(cos.video, "user");
+    await startCamera(cos.video, "user");
     cos.currentFacing = "user";
     cos.btnCapture.disabled = false;
     cos.btnStop.disabled = false;
@@ -225,7 +236,7 @@ cos.btnBack.addEventListener("click", async ()=>{
   try{
     cos.msg.textContent = "Opening back camera...";
     stopStream(cos.video);
-    cosStream = await startCamera(cos.video, "environment");
+    await startCamera(cos.video, "environment");
     cos.currentFacing = "environment";
     cos.btnCapture.disabled = false;
     cos.btnStop.disabled = false;
@@ -248,7 +259,6 @@ cos.btnCapture.addEventListener("click", async ()=>{
     persist(); renderStatus();
     if(both){
       cos.msg.textContent = "Both photos captured.";
-      // Confirmación manual final
       await confirmPassFail("cosmetic", "Photos look acceptable", "Cosmetic issue reported");
     }else{
       cos.msg.textContent = "Captured. Take the other side to complete.";
@@ -262,54 +272,103 @@ cos.btnStop.addEventListener("click", ()=>{
   cos.msg.textContent = "Camera stopped.";
 });
 
-/* ---------- GPS (automático) ---------- */
-$("#gpsBtn").addEventListener("click", ()=>{
+/* =========================================================
+   GPS (permissions + mensajes)
+========================================================= */
+$("#gpsBtn").addEventListener("click", async ()=>{
   const out = $("#gpsOut");
   const warn = $("#gpsWarn");
   out.textContent = ""; warn.textContent = "";
-  if(!navigator.geolocation){
-    warn.textContent = "Geolocation is not supported by this browser.";
+
+  const tips = "Make sure:\n• You’re on HTTPS (or localhost)\n• Location Services are ON\n• Browser has Location permission ALLOWED for this site";
+
+  try{
+    if(!("geolocation" in navigator)){
+      throw new Error("Geolocation is not supported by this browser.");
+    }
+
+    // Intentar saber estado de permisos si el navegador lo permite
+    try{
+      if(navigator.permissions?.query){
+        const p = await navigator.permissions.query({ name: "geolocation" });
+        if(p.state === "denied"){
+          warn.textContent = "Location permission is denied. Open your browser settings and enable Location for this site.\n\n"+tips;
+          state.results.gps.status = "fail";
+          state.results.gps.msg = "Permission denied";
+          renderStatus(); persist();
+          return;
+        }
+      }
+    }catch(e){ /* algunos navegadores no soportan */ }
+
+    // Llamada que dispara prompt si está en "prompt"
+    navigator.geolocation.getCurrentPosition((pos)=>{
+      const { latitude, longitude, accuracy } = pos.coords;
+      out.textContent = JSON.stringify({ latitude, longitude, accuracy, timestamp: pos.timestamp }, null, 2);
+      state.results.gps.status = "pass";
+      state.results.gps.coords = { latitude, longitude };
+      state.results.gps.accuracy = accuracy;
+      state.results.gps.msg = `Location OK (±${Math.round(accuracy)} m)`;
+      renderStatus(); persist();
+    }, (err)=>{
+      warn.textContent = `Error: ${err.message}\n\n${tips}`;
+      state.results.gps.status = "fail";
+      state.results.gps.msg = err.message;
+      renderStatus(); persist();
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+
+  }catch(e){
+    warn.textContent = e.message + "\n\n" + tips;
     state.results.gps.status = "fail";
-    state.results.gps.msg = "No geolocation support";
+    state.results.gps.msg = e.message;
     renderStatus(); persist();
-    return;
   }
-  navigator.geolocation.getCurrentPosition((pos)=>{
-    const { latitude, longitude, accuracy } = pos.coords;
-    out.textContent = JSON.stringify({ latitude, longitude, accuracy, timestamp: pos.timestamp }, null, 2);
-    state.results.gps.status = "pass";
-    state.results.gps.coords = { latitude, longitude };
-    state.results.gps.accuracy = accuracy;
-    state.results.gps.msg = `Location OK (±${Math.round(accuracy)} m)`;
-    renderStatus(); persist();
-  }, (err)=>{
-    warn.textContent = `Error: ${err.message}`;
-    state.results.gps.status = "fail";
-    state.results.gps.msg = err.message;
-    renderStatus(); persist();
-  }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
 });
 
-/* ---------- SPEAKER (confirmación por botones) ---------- */
-let audioCtx = null, spkOsc = null, spkGain = null;
-$("#spkPlayBtn").addEventListener("click", ()=>{
-  try{
-    if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    spkOsc = audioCtx.createOscillator();
-    spkGain = audioCtx.createGain();
-    spkOsc.type = "sine";
-    spkOsc.frequency.value = 440;
-    spkOsc.connect(spkGain).connect(audioCtx.destination);
-    spkGain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
-    spkGain.gain.exponentialRampToValueAtTime(0.3, audioCtx.currentTime + 0.1);
-    spkOsc.start();
+/* =========================================================
+   SPEAKER (unlock/resume + fallback)
+========================================================= */
+let audioCtx = null;
+let spkOsc = null, spkGain = null;
+
+function ensureAudioContext(){
+  if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if(audioCtx.state === "suspended"){
+    // iOS/Android suelen requerir gesto del usuario
+    return audioCtx.resume().catch(()=>{});
+  }
+  return Promise.resolve();
+}
+function playWebAudioBeep(){
+  spkOsc = audioCtx.createOscillator();
+  spkGain = audioCtx.createGain();
+  spkOsc.type = "sine";
+  spkOsc.frequency.value = 880; // más agudo para móviles
+  spkOsc.connect(spkGain).connect(audioCtx.destination);
+  spkGain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+  spkGain.gain.exponentialRampToValueAtTime(0.35, audioCtx.currentTime + 0.05);
+  spkOsc.start();
+  setTimeout(()=>{
+    spkGain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.05);
     setTimeout(()=>{
-      spkGain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.1);
-      setTimeout(()=>{
-        try{ spkOsc.stop(); spkOsc.disconnect(); spkGain.disconnect(); }catch(_){}
-      },150);
-    }, 1800);
-    $("#spkMsg").textContent = "Tone played. Did you hear it?";
+      try{ spkOsc.stop(); spkOsc.disconnect(); spkGain.disconnect(); }catch(_){}
+    },120);
+  }, 1400);
+}
+function playFallbackAudio(){
+  // Data URI simple (500ms) — por si el WebAudio fue bloqueado o el móvil está raro
+  const snd = new Audio("data:audio/mp3;base64,//uQZAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQAA");
+  // Nota: es un silencio corto, algunos navegadores bloquean; si no suena, al menos se intentó activar el canal
+  snd.play().catch(()=>{});
+}
+
+$("#spkPlayBtn").addEventListener("click", async ()=>{
+  try{
+    await ensureAudioContext();
+    playWebAudioBeep();
+    $("#spkMsg").textContent = "Tone played. Ensure volume is up and silent mode is off.";
+    // Intentar también fallback para 'desmutear' ruta de audio en algunos dispositivos
+    playFallbackAudio();
   }catch(e){
     $("#spkMsg").textContent = "Audio error: " + e.message;
   }
@@ -329,7 +388,9 @@ $("#spkNotHeardBtn").addEventListener("click", ()=>{
   $("#spkMsg").textContent = "Marked as FAIL.";
 });
 
-/* ---------- MICROPHONE (confirmación por botones) ---------- */
+/* =========================================================
+   MICROPHONE (MediaRecorder o monitor con VU meter)
+========================================================= */
 const mic = {
   startBtn: $("#micStartBtn"),
   stopBtn: $("#micStopBtn"),
@@ -340,80 +401,129 @@ const mic = {
   msg: $("#micMsg"),
   media: null,
   rec: null,
-  chunks: []
+  chunks: [],
+  analyser: null,
+  raf: null,
+  vuEl: null,
+  monitoring: false
 };
+
+function attachVUMeter(parent){
+  if(mic.vuEl) return;
+  const bar = document.createElement("div");
+  Object.assign(bar.style, {
+    width: "100%", height: "12px",
+    background: "linear-gradient(90deg,#1f8f3a,#ffc107,#dc3545)",
+    transformOrigin: "left center",
+    transform: "scaleX(0.01)",
+    borderRadius: "6px", marginTop: "8px"
+  });
+  parent.appendChild(bar);
+  mic.vuEl = bar;
+}
+function startMonitor(stream){
+  if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = audioCtx.createMediaStreamSource(stream);
+  mic.analyser = audioCtx.createAnalyser();
+  mic.analyser.fftSize = 2048;
+  src.connect(mic.analyser);
+  attachVUMeter(mic.msg.parentElement || mic.msg);
+  mic.monitoring = true;
+  const data = new Uint8Array(mic.analyser.frequencyBinCount);
+  const loop = ()=>{
+    if(!mic.monitoring) return;
+    mic.analyser.getByteTimeDomainData(data);
+    // Calcular RMS simple
+    let sum=0; for(let i=0;i<data.length;i++){ const v=(data[i]-128)/128; sum+=v*v; }
+    const rms = Math.sqrt(sum/data.length); // 0..~1
+    const level = Math.min(1, rms*4); // ganar un poco
+    if(mic.vuEl){ mic.vuEl.style.transform = `scaleX(${Math.max(0.02, level)})`; }
+    mic.raf = requestAnimationFrame(loop);
+  };
+  mic.raf = requestAnimationFrame(loop);
+}
+
 mic.startBtn.addEventListener("click", async ()=>{
   mic.warn.textContent = ""; mic.msg.textContent = "";
-  if(!navigator.mediaDevices?.getUserMedia){
-    mic.warn.textContent = "getUserMedia is not supported.";
-    return;
-  }
   try{
-    mic.media = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
-    if(!window.MediaRecorder){
-      mic.warn.textContent = "MediaRecorder is not supported in this browser.";
-      return;
-    }
-    mic.rec = new MediaRecorder(mic.media);
-    mic.chunks = [];
-    mic.rec.ondataavailable = e => { if(e.data.size>0) mic.chunks.push(e.data); };
-    mic.rec.onstop = ()=>{
-      const blob = new Blob(mic.chunks, { type: "audio/webm" });
-      const url = URL.createObjectURL(blob);
-      mic.audio.src = url;
-      mic.audio.classList.remove("hide");
+    const constraints = { audio: { echoCancellation:true, noiseSuppression:true, sampleRate: 44100 }, video:false };
+    mic.media = await navigator.mediaDevices.getUserMedia(constraints);
+
+    if(window.MediaRecorder){
+      // Grabación normal
+      mic.rec = new MediaRecorder(mic.media, { mimeType: "audio/webm" });
+      mic.chunks = [];
+      mic.rec.ondataavailable = e => { if(e.data.size>0) mic.chunks.push(e.data); };
+      mic.rec.onstop = ()=>{
+        const blob = new Blob(mic.chunks, { type: "audio/webm" });
+        const url = URL.createObjectURL(blob);
+        mic.audio.src = url;
+        mic.audio.classList.remove("hide");
+        mic.confirmBtn.disabled = false;
+        mic.denyBtn.disabled = false;
+        state.results.microphone.blobUrl = url;
+        mic.msg.textContent = "Playback ready. Can you hear your voice?";
+        mic.media.getTracks().forEach(t=>t.stop());
+        mic.media = null;
+      };
+      mic.rec.start();
+      mic.startBtn.disabled = true;
+      mic.stopBtn.disabled = false;
+      mic.msg.textContent = "Recording… speak for ~3 seconds, then tap Stop.";
+      setTimeout(()=> { if(mic.rec?.state==="recording") mic.rec.stop(); }, 3500);
+    } else {
+      // Fallback monitor (iOS Safari antiguo)
+      mic.msg.textContent = "Live monitor mode (no recording on this browser). Speak and watch the level bar.";
+      mic.audio.classList.add("hide");
       mic.confirmBtn.disabled = false;
       mic.denyBtn.disabled = false;
-      state.results.microphone.blobUrl = url;
-      mic.msg.textContent = "Playback ready. Can you hear your voice?";
-      mic.media.getTracks().forEach(t=>t.stop());
-      mic.media = null;
-    };
-    mic.rec.start();
-    mic.startBtn.disabled = true;
-    mic.stopBtn.disabled = false;
-    mic.msg.textContent = "Recording… speak for ~3 seconds, then tap Stop.";
-    setTimeout(()=> { if(mic.rec?.state==="recording") mic.rec.stop(); }, 3500);
+      startMonitor(mic.media);
+      mic.startBtn.disabled = true;
+      mic.stopBtn.disabled = false;
+    }
   }catch(e){
-    mic.warn.textContent = "Microphone error: " + e.message;
+    mic.warn.textContent = "Microphone error: " + (e.message || e.name || "Unknown");
+    mic.msg.textContent = "Check the site permission for Microphone and try again.";
   }
 });
 mic.stopBtn.addEventListener("click", ()=>{
   try{
-    mic.rec?.state==="recording" && mic.rec.stop();
+    if(mic.rec?.state==="recording") mic.rec.stop();
+    if(mic.media){ mic.media.getTracks().forEach(t=>t.stop()); mic.media = null; }
+    if(mic.monitoring){
+      mic.monitoring = false;
+      if(mic.raf) cancelAnimationFrame(mic.raf);
+      mic.raf = null;
+      mic.analyser && (mic.analyser.disconnect(), mic.analyser=null);
+    }
     mic.stopBtn.disabled = true;
     mic.startBtn.disabled = false;
   }catch(e){}
 });
 mic.confirmBtn.addEventListener("click", ()=>{
   state.results.microphone.status = "pass";
-  state.results.microphone.msg = "User heard recorded playback";
+  state.results.microphone.msg = window.MediaRecorder ? "User heard recorded playback" : "User confirmed live monitor works";
   persist(); renderStatus();
   mic.msg.textContent = "PASS confirmed.";
 });
 mic.denyBtn.addEventListener("click", ()=>{
   state.results.microphone.status = "fail";
-  state.results.microphone.msg = "User could not hear playback";
+  state.results.microphone.msg = window.MediaRecorder ? "User could not hear playback" : "User reported monitor not working";
   persist(); renderStatus();
   mic.msg.textContent = "Marked as FAIL.";
 });
 
-/* ---------- FRONT CAMERA (ahora con confirmación) ---------- */
-const f = {
-  video: $("#fVideo"),
-  canvas: $("#fCanvas"),
-  img: $("#fImg"),
-  startBtn: $("#fStartBtn"),
-  captureBtn: $("#fCaptureBtn"),
-  stopBtn: $("#fStopBtn"),
-  stream: null,
-  msg: $("#fMsg")
+/* =========================================================
+   FRONT / BACK CAMERA (confirma calidad)
+========================================================= */
+const f = { video: $("#fVideo"), canvas: $("#fCanvas"), img: $("#fImg"),
+  startBtn: $("#fStartBtn"), captureBtn: $("#fCaptureBtn"), stopBtn: $("#fStopBtn"), msg: $("#fMsg")
 };
 f.startBtn.addEventListener("click", async ()=>{
   try{
     f.msg.textContent = "Opening front camera…";
     stopStream(f.video);
-    f.stream = await startCamera(f.video,"user");
+    await startCamera(f.video,"user");
     f.captureBtn.disabled = false; f.stopBtn.disabled = false;
     f.msg.textContent = "Front camera ready.";
   }catch(e){ f.msg.textContent = e.message; }
@@ -439,22 +549,14 @@ f.stopBtn.addEventListener("click", ()=>{
   f.msg.textContent = "Camera stopped.";
 });
 
-/* ---------- BACK CAMERA (ahora con confirmación) ---------- */
-const b = {
-  video: $("#bVideo"),
-  canvas: $("#bCanvas"),
-  img: $("#bImg"),
-  startBtn: $("#bStartBtn"),
-  captureBtn: $("#bCaptureBtn"),
-  stopBtn: $("#bStopBtn"),
-  stream: null,
-  msg: $("#bMsg")
+const b = { video: $("#bVideo"), canvas: $("#bCanvas"), img: $("#bImg"),
+  startBtn: $("#bStartBtn"), captureBtn: $("#bCaptureBtn"), stopBtn: $("#bStopBtn"), msg: $("#bMsg")
 };
 b.startBtn.addEventListener("click", async ()=>{
   try{
     b.msg.textContent = "Opening back camera…";
     stopStream(b.video);
-    b.stream = await startCamera(b.video,"environment");
+    await startCamera(b.video,"environment");
     b.captureBtn.disabled = false; b.stopBtn.disabled = false;
     b.msg.textContent = "Back camera ready.";
   }catch(e){ b.msg.textContent = e.message; }
@@ -480,12 +582,122 @@ b.stopBtn.addEventListener("click", ()=>{
   b.msg.textContent = "Camera stopped.";
 });
 
-/* ---------- TOUCHSCREEN (automático) ---------- */
+/* =========================================================
+   TOUCHSCREEN — Fullscreen Grid + 45s timeout
+========================================================= */
+const tCanvas = $("#touchCanvas");
+const tCtx = tCanvas.getContext("2d");
+
+let touchGrid = null, touchRows = 0, touchCols = 0, touchFilled = 0, touchTimer = null, touchDeadline = null;
+
+function sizeCanvasFullscreen(canvas, container){
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  canvas.width = w; canvas.height = h;
+  container.style.width = "100%";
+}
+
+function buildTouchGrid(){
+  // 6x10 aprox según aspecto (más celdas si pantalla grande)
+  const w = tCanvas.width, h = tCanvas.height;
+  touchCols = Math.max(6, Math.round(w / 80));
+  touchRows = Math.max(8, Math.round(h / 90));
+  touchGrid = new Array(touchRows * touchCols).fill(false);
+  touchFilled = 0;
+
+  // dibujar rejilla
+  tCtx.clearRect(0,0,w,h);
+  tCtx.lineWidth = 1;
+  tCtx.strokeStyle = "rgba(255,255,255,.2)";
+  for(let r=1;r<touchRows;r++){
+    const y = (h/touchRows)*r;
+    tCtx.beginPath(); tCtx.moveTo(0,y); tCtx.lineTo(w,y); tCtx.stroke();
+  }
+  for(let c=1;c<touchCols;c++){
+    const x = (w/touchCols)*c;
+    tCtx.beginPath(); tCtx.moveTo(x,0); tCtx.lineTo(x,h); tCtx.stroke();
+  }
+}
+
+function markCellFromPoint(x,y){
+  const w = tCanvas.width, h = tCanvas.height;
+  const cW = w / touchCols, cH = h / touchRows;
+  const c = Math.min(touchCols-1, Math.max(0, Math.floor(x / cW)));
+  const r = Math.min(touchRows-1, Math.max(0, Math.floor(y / cH)));
+  const idx = r * touchCols + c;
+  if(!touchGrid[idx]){
+    touchGrid[idx] = true;
+    touchFilled++;
+    // pintar la celda
+    tCtx.fillStyle = "rgba(13,110,253,.35)";
+    tCtx.fillRect(c*cW+1, r*cH+1, cW-2, cH-2);
+    // ¿completo?
+    if(touchFilled === touchGrid.length){
+      clearTimeout(touchTimer);
+      confirmPassFail("touchscreen", "All grid cells touched", "User reported issue").then(()=> {
+        closePanel();
+      });
+    }
+  }
+}
+
+function touchHandlerFactory(canvas){
+  const rectOf = ()=> canvas.getBoundingClientRect();
+  const onTouch = (clientX, clientY)=>{
+    const rect = rectOf();
+    markCellFromPoint(clientX - rect.left, clientY - rect.top);
+  };
+  canvas.addEventListener("touchstart", (e)=>{ e.preventDefault(); [...e.touches].forEach(t=>onTouch(t.clientX,t.clientY)); }, {passive:false});
+  canvas.addEventListener("touchmove", (e)=>{ e.preventDefault(); [...e.touches].forEach(t=>onTouch(t.clientX,t.clientY)); }, {passive:false});
+  canvas.addEventListener("mousedown", (e)=> onTouch(e.clientX,e.clientY));
+  canvas.addEventListener("mousemove", (e)=> { if(e.buttons&1) onTouch(e.clientX,e.clientY); });
+}
+
+touchHandlerFactory(tCanvas);
+
+// Cuando se abre el panel de touch, ir a fullscreen y armar rejilla + timer
+$("#touchPanel").addEventListener("transitionstart", ()=>{}, { once:true });
+const openTouchPanel = new MutationObserver((muts)=>{
+  muts.forEach(m=>{
+    if(m.attributeName === "style"){
+      const panel = $("#touchPanel");
+      if(panel.style.display === "block"){
+        (async ()=>{
+          await enterFullscreen(panel);
+          sizeCanvasFullscreen(tCanvas, panel);
+          buildTouchGrid();
+          // 45s timeout
+          if(touchTimer) clearTimeout(touchTimer);
+          touchDeadline = Date.now() + 45000;
+          touchTimer = setTimeout(()=>{
+            // si no se completó, preguntar automáticamente
+            confirmPassFail("touchscreen", "User confirmed grid OK", "Not all cells touched in time").then(()=>{
+              closePanel();
+            });
+          }, 45000);
+        })();
+      }
+    }
+  });
+});
+openTouchPanel.observe($("#touchPanel"), { attributes:true });
+
+window.addEventListener("resize", ()=>{
+  if(document.fullscreenElement === $("#touchPanel")){
+    sizeCanvasFullscreen(tCanvas, $("#touchPanel"));
+    buildTouchGrid(); // reset grid si cambió tamaño
+  }
+});
+
+/* =========================================================
+   MULTITOUCH (igual que antes, automático)
+========================================================= */
 function drawDot(ctx, x, y, color){
   ctx.fillStyle = color || "#7eb3ff";
   ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI*2); ctx.fill();
 }
 function setTouchHandlers(canvas, isMulti){
+  if(canvas === tCanvas) return; // ya manejado por el test fullscreen
   const msgEl = isMulti ? $("#multiMsg") : $("#touchMsg");
   const key = isMulti ? "multitouch" : "touchscreen";
   let maxTouches = 0;
@@ -514,7 +726,6 @@ function setTouchHandlers(canvas, isMulti){
     msgEl.textContent = state.results[key].msg;
   }, { passive:false });
 
-  // Mouse fallback
   canvas.addEventListener("mousedown", (e)=>{
     const rect = canvas.getBoundingClientRect();
     drawDot(canvas.getContext("2d"), e.clientX - rect.left, e.clientY - rect.top);
@@ -530,10 +741,19 @@ function setTouchHandlers(canvas, isMulti){
     msgEl.textContent = state.results[key].msg;
   });
 }
-setTouchHandlers($("#touchCanvas"), false);
 setTouchHandlers($("#multiCanvas"), true);
 
-/* ---------- DISPLAY (confirmación por botones) ---------- */
+/* =========================================================
+   DISPLAY — Fullscreen + Tap to cycle colors + confirm
+========================================================= */
+const dispArea = $("#displayTestArea");
+const dispInfo = $("#displayInfo");
+const dispMsg = $("#displayMsg");
+const dispStartBtn = $("#dispStartBtn");
+const dispStopBtn  = $("#dispStopBtn");
+const dispOkBtn    = $("#dispOkBtn");
+const dispBadBtn   = $("#dispBadBtn");
+
 (function initDisplayInfo(){
   const info = {
     width: window.screen.width,
@@ -543,50 +763,74 @@ setTouchHandlers($("#multiCanvas"), true);
     pixelRatio: window.devicePixelRatio || 1,
     colorDepth: window.screen.colorDepth
   };
-  $("#displayInfo").textContent = JSON.stringify(info, null, 2);
-  state.results.display.status = "pending";
+  dispInfo.textContent = JSON.stringify(info, null, 2);
   state.results.display.pixels = `${info.width}x${info.height}`;
   state.results.display.ratio = info.pixelRatio;
   state.results.display.depth = info.colorDepth;
-  state.results.display.msg = "Info read; run color test";
+  state.results.display.status = "pending";
+  state.results.display.msg = "Tap Start to run fullscreen color test";
   persist(); renderStatus();
 })();
-let dispTimer = null, dispStep = 0;
-const dispArea = $("#displayTestArea");
-$("#dispStartBtn").addEventListener("click", ()=>{
-  const colors = ["#ff0000","#00ff00","#0000ff","#ffffff","#000000","#888888"];
-  dispStep = 0;
-  dispArea.textContent = "Color Test Running…";
-  dispArea.style.background = colors[0];
-  $("#dispStopBtn").disabled = false;
-  clearInterval(dispTimer);
-  dispTimer = setInterval(()=>{
-    dispStep = (dispStep+1) % colors.length;
-    dispArea.style.background = colors[dispStep];
-    dispArea.textContent = "";
-  }, 800);
+
+const colorSeq = ["#ff0000","#00ff00","#0000ff","#ffffff","#000000","#ffff00","#00ffff","#ff00ff","#808080"];
+let colorIndex = 0;
+let dispCycling = false;
+
+function setDispColor(c){ dispArea.style.background = c; dispArea.textContent = ""; }
+
+dispStartBtn.addEventListener("click", async ()=>{
+  // fullscreen del panel Display
+  const panel = $("#displayPanel");
+  await enterFullscreen(panel);
+  dispCycling = true;
+  colorIndex = 0;
+  setDispColor(colorSeq[colorIndex]);
+  dispMsg.textContent = "Tap anywhere to cycle colors. Tap Stop when done.";
+  dispStopBtn.disabled = false;
+  // tap para cambiar
+  panel.addEventListener("click", onDispTap);
+}, { once:true });
+
+function onDispTap(ev){
+  if(!dispCycling) return;
+  colorIndex++;
+  if(colorIndex >= colorSeq.length){
+    dispCycling = false;
+    // pedir confirmación
+    confirmPassFail("display", "User confirmed colors OK", "User reported color/brightness issue").then(()=>{
+      dispMsg.textContent = "Display test finished.";
+      exitFullscreenSafe();
+    });
+    return;
+  }
+  setDispColor(colorSeq[colorIndex]);
+}
+
+dispStopBtn.addEventListener("click", ()=>{
+  dispCycling = false;
+  dispMsg.textContent = "Stopped.";
+  dispStopBtn.disabled = true;
+  exitFullscreenSafe();
 });
-$("#dispStopBtn").addEventListener("click", ()=>{
-  clearInterval(dispTimer); dispTimer = null;
-  dispArea.textContent = "Stopped.";
-  $("#dispStopBtn").disabled = true;
-});
-$("#dispOkBtn").addEventListener("click", ()=>{
+
+dispOkBtn.addEventListener("click", ()=>{
   state.results.display.status = "pass";
   state.results.display.looksOk = true;
   state.results.display.msg = "User confirmed colors OK";
   persist(); renderStatus();
-  $("#displayMsg").textContent = "PASS confirmed.";
+  dispMsg.textContent = "PASS confirmed.";
 });
-$("#dispBadBtn").addEventListener("click", ()=>{
+dispBadBtn.addEventListener("click", ()=>{
   state.results.display.status = "fail";
   state.results.display.looksOk = false;
   state.results.display.msg = "User reported color/brightness issue";
   persist(); renderStatus();
-  $("#displayMsg").textContent = "Marked as FAIL.";
+  dispMsg.textContent = "Marked as FAIL.";
 });
 
-/* ---------- ACCELEROMETER (automático con permiso iOS) ---------- */
+/* =========================================================
+   ACCELEROMETER / GYROSCOPE (permiso iOS, automático)
+========================================================= */
 let accelHandler = null;
 $("#accelPermBtn").addEventListener("click", async ()=>{
   const out = $("#accelOut"), warn = $("#accelWarn");
@@ -621,7 +865,6 @@ $("#accelStopBtn").addEventListener("click", ()=>{
   $("#accelOut").textContent += "\nStopped.";
 });
 
-/* ---------- GYROSCOPE (automático con permiso iOS) ---------- */
 let gyroHandler = null;
 $("#gyroPermBtn").addEventListener("click", async ()=>{
   const out = $("#gyroOut"), warn = $("#gyroWarn");
@@ -655,7 +898,9 @@ $("#gyroStopBtn").addEventListener("click", ()=>{
   $("#gyroOut").textContent += "\nStopped.";
 });
 
-/* ---------- BATTERY (automático) ---------- */
+/* =========================================================
+   BATTERY (automático)
+========================================================= */
 $("#batteryBtn").addEventListener("click", async ()=>{
   const out = $("#batteryOut"), warn = $("#batteryWarn");
   out.textContent = ""; warn.textContent = "";
@@ -683,7 +928,9 @@ $("#batteryBtn").addEventListener("click", async ()=>{
   }
 });
 
-/* ---------- Reportes ---------- */
+/* =========================================================
+   Reportes + compartir + Start Over
+========================================================= */
 function summarize(){
   const lines = [];
   lines.push(`Phone Inspection Report`);
@@ -706,7 +953,6 @@ function summarize(){
   });
   return lines.join("\n");
 }
-
 function buildHTMLReport(){
   const css = `
     body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;padding:16px;color:#111;background:#fff}
@@ -733,14 +979,10 @@ function buildHTMLReport(){
     if(k==="backCamera" && r.photo) extra += `<div><img src="${r.photo}"/></div>`;
     if(k==="microphone" && r.blobUrl) extra += `<div><audio controls src="${r.blobUrl}"></audio></div>`;
     if(k==="gps" && r.coords) extra += `<pre>${esc(JSON.stringify({coords:r.coords, accuracy:r.accuracy}, null, 2))}</pre>`;
-    if(k==="display") extra += `<pre>${esc(JSON.stringify({
-      pixels: r.pixels, ratio: r.ratio, depth: r.depth, looksOk: r.looksOk
-    }, null, 2))}</pre>`;
+    if(k==="display") extra += `<pre>${esc(JSON.stringify({ pixels:r.pixels, ratio:r.ratio, depth:r.depth, looksOk:r.looksOk }, null, 2))}</pre>`;
     if(k==="accelerometer" && r.last) extra += `<pre>${esc(JSON.stringify(r.last, null, 2))}</pre>`;
     if(k==="gyroscope" && r.last) extra += `<pre>${esc(JSON.stringify(r.last, null, 2))}</pre>`;
-    if(k==="battery" && r.level) extra += `<pre>${esc(JSON.stringify({
-      level:r.level, charging:r.charging, times:r.times
-    }, null, 2))}</pre>`;
+    if(k==="battery" && r.level) extra += `<pre>${esc(JSON.stringify({ level:r.level, charging:r.charging, times:r.times }, null, 2))}</pre>`;
     return `
       <section class="status">
         <div><strong>${k}</strong><div class="muted">${esc(r.msg||"")}</div></div>
@@ -763,13 +1005,11 @@ function buildHTMLReport(){
   </body></html>`;
 }
 
-/* ---------- Compartir / Copiar ---------- */
-// Helper para compartir nativo o WhatsApp
 async function shareTextOrWhatsApp(text) {
   const shareData = { title: "Phone Inspection Report", text };
   if (navigator.canShare && navigator.canShare(shareData) && navigator.share) {
     try { await navigator.share(shareData); return true; }
-    catch (e) { /* cancelado o falló → fallback */ }
+    catch (e) {}
   }
   const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
   window.open(url, '_blank');
@@ -777,7 +1017,7 @@ async function shareTextOrWhatsApp(text) {
 }
 
 $("#generateReportBtn").addEventListener("click", ()=>{
-  summarize(); // generar internamente
+  summarize();
   alert("Report generated.\n\nUse Share or Copy buttons below.\n\nPreview available via 'Open Full Report'.");
 });
 $("#shareReportBtn").addEventListener("click", async ()=>{
@@ -803,9 +1043,8 @@ $("#openReportBtn").addEventListener("click", ()=>{
   w.document.open(); w.document.write(html); w.document.close();
 });
 
-/* ---------- START OVER: compartir (opcional) → borrar → volver al inicio ---------- */
-// Estado limpio para reinicio
-function freshResults() {
+/* ---------- Start Over ---------- */
+function freshResults(){
   return {
     cosmetic: { status: "pending", front:null, back:null, msg:"" },
     gps: { status: "pending", coords:null, accuracy:null, msg:"" },
@@ -821,8 +1060,6 @@ function freshResults() {
     battery: { status: "pending", level:null, charging:null, times:null, msg:"" }
   };
 }
-
-// Borra localStorage + Cache Storage (y opcional: desregistra SW)
 async function wipeAllStorageAndCaches({ unregisterSW = false } = {}) {
   try {
     localStorage.removeItem(STORAGE_KEY);
@@ -834,53 +1071,40 @@ async function wipeAllStorageAndCaches({ unregisterSW = false } = {}) {
       const regs = await navigator.serviceWorker.getRegistrations();
       await Promise.all(regs.map(r => r.unregister()));
     }
-  } catch (e) {
-    console.warn("Wipe error:", e);
-  }
+  } catch (e) { console.warn("Wipe error:", e); }
 }
-
-// Restablece UI/estado y vuelve a la vista de registro
 function resetAppToStart() {
   stopAllMedia();
   state.imei = null;
   state.startedAt = null;
   state.results = freshResults();
-
   $("#imeiInput").value = "";
   $("#imeiError").textContent = "";
   $("#statusList").innerHTML = "";
   $("#progressBadge").textContent = `0 / ${TEST_KEYS.length} done`;
-
   if (overlay.classList.contains("show")) {
     overlay.classList.remove("show");
     overlay.setAttribute("aria-hidden","true");
   }
-
   $("#dashboardView").classList.remove("active");
   $("#registerView").classList.add("active");
   $("#imeiDisplay").textContent = "—";
 }
-
-// Botón Start Over (definido en index.html)
 $("#startOverBtn").addEventListener("click", async () => {
   const wantsToShare = window.confirm(
     "Before starting over, would you like to share the current report?\n\nPress OK to share, or Cancel to skip."
   );
-
   if (wantsToShare) {
     const text = summarize();
     await shareTextOrWhatsApp(text);
-    const confirmErase = window.confirm(
-      "Do you want to wipe all current data and start over?"
-    );
+    const confirmErase = window.confirm("Do you want to wipe all current data and start over?");
     if (!confirmErase) return;
   }
-
-  await wipeAllStorageAndCaches({ unregisterSW: false }); // cambia a true si deseas quitar también el SW
+  await wipeAllStorageAndCaches({ unregisterSW: false });
   resetAppToStart();
   alert("All data cleared. You can register a new IMEI now.");
 });
 
-/* ---------- Misceláneo ---------- */
+/* ---------- Misc ---------- */
 window.addEventListener("beforeunload", ()=> stopAllMedia());
 if(state.imei){ showDashboard(); renderStatus(); }
