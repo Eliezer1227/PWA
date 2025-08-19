@@ -413,11 +413,11 @@ $("#spkNotHeardBtn").addEventListener("click", ()=>{
   wrap.style.display = "flex"; wrap.style.gap = "6px"; wrap.style.alignItems = "center";
   const lab = document.createElement("label"); lab.textContent = "Custom Hz:";
   const inp = document.createElement("input");
-  inp.type = "number"; inp.min = "50"; inp.max = "12000"; inp.step = "1"; inp.value = "1000";
+  inp.type = "number"; inp.min = "50"; inp.max = "30000"; inp.step = "1"; inp.value = "20000";
   inp.style.width = "90px";
   const bPlay = document.createElement("button");
   bPlay.className = "btn outline"; bPlay.textContent = "Play";
-  bPlay.addEventListener("click", ()=> playToneAtFreq(parseFloat(inp.value)||1000));
+  bPlay.addEventListener("click", ()=> playToneAtFreq(parseFloat(inp.value)||20000));
 
   wrap.appendChild(lab); wrap.appendChild(inp); wrap.appendChild(bPlay);
 
@@ -1319,4 +1319,5 @@ $("#startOverBtn").addEventListener("click", async () => {
 /* ---------- Misc ---------- */
 window.addEventListener("beforeunload", ()=> stopAllMedia());
 if(state.imei){ showDashboard(); renderStatus(); }
+
 
