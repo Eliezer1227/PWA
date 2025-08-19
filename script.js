@@ -461,7 +461,7 @@ async function playToneAtFreq(freq = 1000, duration = 1.5){
 
     // Fade in corto, mantener, fade out corto
     const t0 = audioCtx.currentTime;
-    gain.gain.exponentialRampToValueAtTime(0.35, t0 + 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.35, t0 + 0.07);
     osc.start(t0);
     gain.gain.setValueAtTime(0.35, t0 + Math.max(0.05, duration - 0.1));
     gain.gain.exponentialRampToValueAtTime(0.0001, t0 + Math.max(0.06, duration));
@@ -1319,6 +1319,7 @@ $("#startOverBtn").addEventListener("click", async () => {
 /* ---------- Misc ---------- */
 window.addEventListener("beforeunload", ()=> stopAllMedia());
 if(state.imei){ showDashboard(); renderStatus(); }
+
 
 
 
