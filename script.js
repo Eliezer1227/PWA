@@ -387,6 +387,217 @@ $("#spkNotHeardBtn").addEventListener("click", ()=>{
   renderStatus(); persist();
   $("#spkMsg").textContent = "Marked as FAIL.";
 });
+/* =========================================================
+   SPEAKER – Frecuencias + AutoTest con micro
+   (añade a tu bloque de SPEAKER existente)
+========================================================= */
+
+// --- UI dinámica dentro del panel Speaker ---
+(function enhanceSpeakerUI(){
+  const panel = $("#speakerPanel");
+  const row = document.createElement("div");
+  row.className = "row wrap gap";
+  row.style.marginTop = "8px";
+
+  // Frecuencias rápidas
+  const freqBtns = [250, 440, 1000, 2000, 4000].map(f=>{
+    const b = document.createElement("button");
+    b.className = "btn outline";
+    b.textContent = `${f} Hz`;
+    b.addEventListener("click", ()=> playToneAtFreq(f));
+    return b;
+  });
+
+  // Slider/num input
+  const wrap = document.createElement("div");
+  wrap.style.display = "flex"; wrap.style.gap = "6px"; wrap.style.alignItems = "center";
+  const lab = document.createElement("label"); lab.textContent = "Custom Hz:";
+  const inp = document.createElement("input");
+  inp.type = "number"; inp.min = "50"; inp.max = "12000"; inp.step = "1"; inp.value = "1000";
+  inp.style.width = "90px";
+  const bPlay = document.createElement("button");
+  bPlay.className = "btn outline"; bPlay.textContent = "Play";
+  bPlay.addEventListener("click", ()=> playToneAtFreq(parseFloat(inp.value)||1000));
+
+  wrap.appendChild(lab); wrap.appendChild(inp); wrap.appendChild(bPlay);
+
+  // AutoTest (reproduce y mide con micro)
+  const autoBtn = document.createElement("button");
+  autoBtn.className = "btn success";
+  autoBtn.textContent = "AutoTest: Play & Measure";
+  autoBtn.addEventListener("click", async ()=>{
+    const f0 = parseFloat(inp.value)||1000;
+    $("#spkMsg").textContent = "AutoTest running… playing tone and measuring mic.";
+    const ok = await autoTestSpeakerWithMic(f0);
+    if (ok) {
+      state.results.speaker.status = "pass";
+      state.results.speaker.msg = `AutoTest OK at ${f0} Hz`;
+    } else {
+      // si falla AutoTest no marcamos fail forzoso; dejamos al usuario confirmar manual
+      state.results.speaker.status = state.results.speaker.status === "pass" ? "pass" : "pending";
+      state.results.speaker.msg = `AutoTest could not verify ${f0} Hz (low level or filtering?)`;
+    }
+    renderStatus(); persist();
+  });
+
+  // Montar
+  freqBtns.forEach(b => row.appendChild(b));
+  row.appendChild(wrap);
+  row.appendChild(autoBtn);
+  panel.appendChild(row);
+})();
+
+// --- Generador de tono a frecuencia elegida ---
+async function playToneAtFreq(freq = 1000, duration = 1.5){
+  try{
+    await ensureAudioContext();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+
+    osc.type = "sine";
+    osc.frequency.value = Math.max(50, Math.min(12000, freq));
+    gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    osc.connect(gain).connect(audioCtx.destination);
+
+    // Fade in corto, mantener, fade out corto
+    const t0 = audioCtx.currentTime;
+    gain.gain.exponentialRampToValueAtTime(0.35, t0 + 0.05);
+    osc.start(t0);
+    gain.gain.setValueAtTime(0.35, t0 + Math.max(0.05, duration - 0.1));
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + Math.max(0.06, duration));
+    osc.stop(t0 + Math.max(0.08, duration + 0.02));
+
+    $("#spkMsg").textContent = `Playing ${osc.frequency.value|0} Hz…`;
+  }catch(e){
+    $("#spkMsg").textContent = "Audio error: " + e.message;
+  }
+}
+
+// --- AutoTest: reproduce y mide con el mic ---
+async function autoTestSpeakerWithMic(targetHz){
+  // 1) pedir micro
+  let stream;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        channelCount: 1
+      },
+      video: false
+    });
+  }catch(e){
+    $("#spkMsg").textContent = "Mic permission/availability error. Try manual confirmation.";
+    return false;
+  }
+
+  // 2) preparar WebAudio para analizar mic
+  if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  await ensureAudioContext();
+
+  const source = audioCtx.createMediaStreamSource(stream);
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 4096; // mejor resolución
+  source.connect(analyser);
+
+  // 3) reproducir el tono objetivo
+  await playToneAtFreq(targetHz, 1.8);
+
+  // 4) esperar ~150 ms para que “arranque” el sonido
+  await sleep(150);
+
+  // 5) tomar varias ventanas y estimar frecuencia por autocorrelación
+  const sr = audioCtx.sampleRate;
+  const buf = new Float32Array(analyser.fftSize);
+  const estimates = [];
+
+  const endAt = performance.now() + 900; // ~0.9 s de muestra
+  while(performance.now() < endAt){
+    analyser.getFloatTimeDomainData(buf);
+    const { freq, rms } = estimatePitchAutocorr(buf, sr);
+    if(rms > 0.01 && freq > 40 && freq < 12000){
+      estimates.push(freq);
+    }
+    await sleep(60);
+  }
+
+  // 6) cerrar micro
+  try{ stream.getTracks().forEach(t=>t.stop()); }catch(_){}
+
+  if(estimates.length === 0){
+    $("#spkMsg").textContent = "AutoTest: signal too weak or filtered.";
+    return false;
+  }
+
+  // 7) mediana para robustez
+  estimates.sort((a,b)=>a-b);
+  const med = estimates[Math.floor(estimates.length/2)];
+
+  const tol = Math.max(5, targetHz * 0.07); // ±7% o mínimo ±5 Hz
+  const ok = Math.abs(med - targetHz) <= tol;
+
+  $("#spkMsg").textContent = `AutoTest: measured ≈ ${med.toFixed(1)} Hz (target ${targetHz} Hz) → ${ok ? "OK" : "Not matching"}`;
+  return ok;
+}
+
+// --- Utilidades de análisis ---
+function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
+
+// Autocorrelación simple para pitch (monofónica, suficiente para tonos puros)
+function estimatePitchAutocorr(timeData, sampleRate){
+  // RMS para descartar silencio
+  let rms = 0;
+  for(let i=0;i<timeData.length;i++){ const v=timeData[i]; rms += v*v; }
+  rms = Math.sqrt(rms/timeData.length);
+
+  // Normalizar (quitar DC)
+  const buf = timeData;
+  let mean = 0; for(let i=0;i<buf.length;i++) mean += buf[i];
+  mean /= buf.length;
+  for(let i=0;i<buf.length;i++) buf[i] -= mean;
+
+  // Autocorr
+  const SIZE = buf.length;
+  const MAX_LAG = Math.min( Math.floor(sampleRate/40), SIZE-1 );   // f > 40 Hz
+  const MIN_LAG = Math.max( Math.floor(sampleRate/12000), 2 );     // f < 12 kHz
+
+  let bestLag = -1;
+  let bestCorr = 0;
+
+  for(let lag=MIN_LAG; lag<=MAX_LAG; lag++){
+    let corr = 0;
+    for(let i=0; i<SIZE-lag; i++){
+      corr += buf[i] * buf[i+lag];
+    }
+    if(corr > bestCorr){
+      bestCorr = corr;
+      bestLag = lag;
+    }
+  }
+
+  let freq = -1;
+  if(bestLag > 0){
+    // afinar pico con interpolación parabólica simple
+    const c0 = corrAtLag(buf, bestLag-1);
+    const c1 = corrAtLag(buf, bestLag);
+    const c2 = corrAtLag(buf, bestLag+1);
+    const denom = (c0 - 2*c1 + c2);
+    let shift = 0;
+    if (denom !== 0){
+      shift = 0.5 * (c0 - c2) / denom;
+    }
+    const refinedLag = bestLag + shift;
+    freq = sampleRate / refinedLag;
+  }
+  return { freq, rms };
+
+  function corrAtLag(b, lag){
+    let c=0;
+    for(let i=0;i<b.length-lag;i++){ c += b[i]*b[i+lag]; }
+    return c;
+  }
+}
 
 /* =========================================================
    MICROPHONE (MediaRecorder o monitor con VU meter)
@@ -1108,3 +1319,4 @@ $("#startOverBtn").addEventListener("click", async () => {
 /* ---------- Misc ---------- */
 window.addEventListener("beforeunload", ()=> stopAllMedia());
 if(state.imei){ showDashboard(); renderStatus(); }
+
